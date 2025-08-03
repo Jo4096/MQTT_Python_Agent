@@ -34,6 +34,12 @@ agent2 = MQTT_Agent(
     ]
 )
 
+@agent1.command("temperatura_report")
+def handle_temp_report(sender_id, message):
+    print(f"\n[Agente 1: {agent1.client_id}] -> RECEBIDO relatório de temperatura de '{sender_id}'.", flush=True)
+    print(f"[Agente 1: {agent1.client_id}] -> Dados recebidos: {message}\n", flush=True)
+
+
 # Agente 2 regista o comando que recebe: "ligar_luz"
 @agent2.command("ligar_luz")
 def handle_light_on_command(sender_id, message):
