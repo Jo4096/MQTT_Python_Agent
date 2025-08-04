@@ -5,9 +5,9 @@ Imagina-o como um sistema de correio.
 - No MQTT, as cartas chegam-te automaticamente.
 
 Isto funciona com base em três conceitos simples:
-- **Broker**: É o centro de correio. Recebe todas as mensagens e distribui-as para quem as quer.
-- **Publisher**: É quem envia a carta. A sua única responsabilidade é enviar a mensagem para o broker.
-- **Subscriber**: É quem recebe a carta. Ele regista o seu interesse em "tópicos" específicos (por exemplo, "notícias sobre tecnologia") e o broker envia-lhe todas as mensagens com esse tópico.
+- **`Broker`**: É o centro de correio. Recebe todas as mensagens e distribui-as para quem as quer.
+- **`Publisher`**: É quem envia a carta. A sua única responsabilidade é enviar a mensagem para o broker.
+- **`Subscriber`**: É quem recebe a carta. Ele regista o seu interesse em "tópicos" específicos (por exemplo, "notícias sobre tecnologia") e o broker envia-lhe todas as mensagens com esse tópico.
 
 # Brokers Públicos
 
@@ -58,19 +58,19 @@ O construtor (__init__) da classe MQTT_Agent é o coração da tua aplicação, 
 
 Visão Geral dos Argumentos
 A classe é altamente configurável e aceita diversos argumentos para adaptar-se a diferentes cenários, desde um simples teste local até uma implementação de produção segura.
-- **broker**: O endereço IP ou nome de domínio do servidor MQTT a que te vais ligar.
-- **port**: A porta de comunicação do broker (a porta padrão é 1883).
-- **client_id**: Um identificador único para o teu agente. Se não for fornecido, será gerado um ID aleatório.
-- **topics_subscribe**: Uma lista de tópicos MQTT a que o agente irá subscrever para receber mensagens.
-- **keep_alive**: O tempo máximo, em segundos, que o agente espera por uma resposta do broker antes de assumir que a ligação foi perdida.
-- **username, password**: Credenciais para autenticação no broker, caso seja necessário.
-- **debug_prints**: Um flag booleano para ativar ou desativar as mensagens de depuração na consola.
-- **enable_ping, enable_pong, ping_period**: Argumentos para ativar a funcionalidade de "descoberta de dispositivos". O ping é uma mensagem enviada para encontrar outros dispositivos, e o pong é a resposta a essa mensagem.
+- **`broker`**: O endereço IP ou nome de domínio do servidor MQTT a que te vais ligar.
+- **`port`**: A porta de comunicação do broker (a porta padrão é 1883).
+- **`client_id`**: Um identificador único para o teu agente. Se não for fornecido, será gerado um ID aleatório.
+- **`topics_subscribe`**: Uma lista de tópicos MQTT a que o agente irá subscrever para receber mensagens.
+- **`keep_alive`**: O tempo máximo, em segundos, que o agente espera por uma resposta do broker antes de assumir que a ligação foi perdida.
+- **`username`, `password`**: Credenciais para autenticação no broker, caso seja necessário.
+- **`debug_prints`**: Um flag booleano para ativar ou desativar as mensagens de depuração na consola.
+- **`enable_ping`, `enable_pong`, `ping_period`**: Argumentos para ativar a funcionalidade de "descoberta de dispositivos". O ping é uma mensagem enviada para encontrar outros dispositivos, e o pong é a resposta a essa mensagem.
 
 # topics_subscribe
 Muito basicamente queres te subscrever aos topicos sempre
-- 'devices/o_meu_device_id/cmd'  <-  usado para poderes **receber mensagens**
-- 'devices/all/data' <- **canal de broadcast**
+- `devices/o_meu_device_id/cmd`  <-  usado para poderes **receber mensagens**
+- `devices/all/data` <- **canal de broadcast**
 
 **se** quiseres ouvir as mensagens todas e de todos os devices usa devices/+/data ou devices/+/cmd ou devices/# e ai tu ouves tudo e todos. Problema com isso podes te ouvir a ti proprio e começas a responder a ti proprio 
 
