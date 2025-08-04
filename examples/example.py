@@ -9,7 +9,7 @@ from MqttClass import MQTT_Agent
 agent1 = MQTT_Agent(
     broker="localhost",
     client_id="raspberry_pi",
-    debug_prints=True,
+    debug_prints=False,
     enable_ping=True,
     enable_pong=True,
     ping_period=60,
@@ -24,7 +24,7 @@ agent1 = MQTT_Agent(
 agent2 = MQTT_Agent(
     broker="localhost",
     client_id="esp32_quarto",
-    debug_prints=True,
+    debug_prints=False,
     enable_ping=True,
     enable_pong=True,
     ping_period=60,
@@ -54,11 +54,7 @@ def handle_read_temp_command(sender_id, message):
     print(f"[Agente 2: {agent2.client_id}] -> A enviar a temperatura de volta para '{sender_id}'...", flush=True)
     
     # Agente 2 responde ao Agente 1 com o comando "temperatura_report"
-    response_payload = {
-        "command": "temperatura_report",
-        "message": json.dumps({"valor": 23.5, "unidade": "C"})
-    }
-    agent2.publish_to_device(sender_id, response_payload)
+    agent2.publish_to_device_formatted(sender_id, "temperatura_report", json.dumps({"valor": 23.5, "unidade": "C"}))
 
 
 # --- PARTE 2: INICIAR OS AGENTES E SIMULAR A COMUNICAÇÃO ---
@@ -80,21 +76,13 @@ if __name__ == "__main__":
             
             # Passo 1: Agente 1 envia um comando 'ligar_luz' para o Agente 2.
             print(f"[{agent1.client_id}] -> A ENVIAR comando 'ligar_luz' para '{agent2.client_id}'.", flush=True)
-            publish_payload_1 = {
-                "command": "ligar_luz",
-                "message": "true"
-            }
-            agent1.publish_to_device("esp32_quarto", publish_payload_1)
+            agent1.publish_to_device_formatted("esp32_quarto", "ligar_luz", "true")
             
             time.sleep(2)
 
             # Passo 2: Agente 1 envia um comando 'ler_temperatura' para o Agente 2.
             print(f"[{agent1.client_id}] -> A ENVIAR comando 'ler_temperatura' para '{agent2.client_id}'.", flush=True)
-            publish_payload_2 = {
-                "command": "ler_temperatura",
-                "message": ""
-            }
-            agent1.publish_to_device("esp32_quarto", publish_payload_2)
+            agent1.publish_to_device_formatted("esp32_quarto", "ler_temperatura", "")
             
             time.sleep(2)
         else:
