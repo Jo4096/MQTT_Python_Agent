@@ -1,10 +1,10 @@
 Agente Python MQTT
-AgentMQTT: Uma Biblioteca Python para Comunicação Robusta em IoT
+MQTT_Agent: Uma Biblioteca Python para Comunicação Robusta em IoT
 
-O AgentMQTT é um wrapper de alto nível para a biblioteca Paho MQTT, concebido para simplificar a comunicação em projetos de Internet das Coisas (IoT). Com uma arquitetura de mensagens flexível baseada em JSON e um mecanismo de descoberta automática de dispositivos, a biblioteca permite que os seus agentes Python e dispositivos ESP32 comuniquem de forma simples e eficaz. Ideal para domótica, o AgentMQTT garante que os dispositivos se encontram e interagem dinamicamente, sem a necessidade de configurações manuais complicadas.
+O MQTT_Agent é um wrapper de alto nível para a biblioteca Paho MQTT, concebido para simplificar a comunicação em projetos de Internet das Coisas (IoT). Com uma arquitetura de mensagens flexível baseada em JSON e um mecanismo de descoberta automática de dispositivos, a biblioteca permite que os seus agentes Python e dispositivos ESP32 comuniquem de forma simples e eficaz. Ideal para domótica, o AgentMQTT garante que os dispositivos se encontram e interagem dinamicamente, sem a necessidade de configurações manuais complicadas.
 
 Como Funciona
-A biblioteca AgentMQTT baseia-se num protocolo de comunicação simples mas robusto, que assenta em três pilares principais:
+A biblioteca MQTT_Agent baseia-se num protocolo de comunicação simples mas robusto, que assenta em três pilares principais:
 
 1. Mensagens Estruturadas (Payload JSON)
 Em vez de enviar dados brutos, a biblioteca padroniza cada mensagem numa estrutura JSON consistente. Esta estrutura inclui:
