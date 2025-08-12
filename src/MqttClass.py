@@ -2,6 +2,7 @@ import paho.mqtt.client as mqtt
 import time
 import asyncio
 import socket
+import msgpack
 import json
 import os
 import threading
@@ -9,20 +10,33 @@ import pandas as pd
 from datetime import datetime
 
 
+MAX_CHAR_LIMIT = 12
+
+
 class MQTT_Agent:
     def __init__(self, broker, port=1883, client_id=None, topics_subscribe=None,
-             on_message_callback=None, keep_alive=60, username=None, password=None,
-             clean_session=True, debug_prints=False,
-             enable_ping=False, enable_pong=False, ping_period=30):
+                 on_message_callback=None, keep_alive=60, username=None, password=None,
+                 clean_session=True, debug_prints=False,
+                 enable_ping=False, enable_pong=False, enable_file_transfer=True, ping_period=30, mypassword=""):
         
         self.enable_ping = enable_ping
         self.enable_pong = enable_pong
         self.ping_period = ping_period
+
+        self.enable_file_transfer = enable_file_transfer
+
         self._ping_task = None
 
         self.broker = broker
         self.port = port
+        
+        # Log da truncagem do client_id no init
+        if client_id and len(client_id) > MAX_CHAR_LIMIT and debug_prints:
+            print(f"[DEBUG] '{client_id}' -> '{client_id[:MAX_CHAR_LIMIT]}'.")
+            
         self.client_id = client_id or "mqtt_agent_" + str(int(time.time()))
+        self.client_id = self.client_id[:MAX_CHAR_LIMIT]
+
         self.topics_subscribe = topics_subscribe or ["devices/+/data"]
         self.on_message_callback = on_message_callback
         self.keepalive = keep_alive
@@ -30,20 +44,38 @@ class MQTT_Agent:
         self.password = password
         self.clean_session = clean_session
         self.debug = debug_prints
+
+        self.mypassword = mypassword[:MAX_CHAR_LIMIT]
+        if mypassword and len(mypassword) > MAX_CHAR_LIMIT and debug_prints:
+            print(f"[DEBUG] password set to 12 chars.")
+
+
         self.known_devices = set()
+        
+        self.file_bin = {}
+        
         self.commands_registry = {}
         self.client = mqtt.Client(client_id=self.client_id, clean_session=self.clean_session)
 
+        # CORREÇÃO: Adicionada a configuração de utilizador e palavra-passe aqui.
         if self.username and self.password:
             self.client.username_pw_set(self.username, self.password)
+
         self.client.on_message = self._internal_on_message
         
         if self.enable_pong:
             self.commands_registry["ping"] = self._handle_ping_command
 
+        if self.enable_file_transfer:
+            self.commands_registry["bg_t"] = self._handle_begin_transfer
+            self.commands_registry["ap_t"] = self._handle_append_transfer
+            self.commands_registry["end_t"] = self._handle_end_transfer
 
-        self.message_log = pd.DataFrame(columns=["timestamp_received", "sender_id", "command", "timestamp_sent", "topic", "message"])
-
+        # Inicializa o lock para proteger recursos partilhados
+        self.lock = threading.Lock()
+        
+        # CORREÇÃO: Altere as colunas do DataFrame para refletir as novas chaves (id, cmd)
+        self.message_log = pd.DataFrame(columns=["timestamp_received", "id", "cmd", "timestamp_sent", "topic", "msg"])
 
     @classmethod
     def from_json(cls, json_path):
@@ -66,77 +98,131 @@ class MQTT_Agent:
             debug_prints=config.get("DEBUG", False),
             enable_ping=config.get("ENABLE_PING", False),
             enable_pong=config.get("ENABLE_PONG", False),
+            enable_file_transfer=config.get("ENABLE_FILE_TRANSFER", True),
             ping_period=config.get("PING_PERIOD", 30)
         )
 
     def command(self, name):
-        """Decorator para registar comandos que recebem JSON"""
+        """Decorator para registar comandos que recebem dados."""
         def decorator(func):
-            self.commands_registry[name] = func
+            if self.debug and len(name) > MAX_CHAR_LIMIT:
+                print(f"[DEBUG] '{name}' -> '{name[:MAX_CHAR_LIMIT]}' ")
+            truncated_name = name[:MAX_CHAR_LIMIT]
+            self.commands_registry[truncated_name] = func
             return func
         return decorator
 
     def _internal_on_message(self, client, userdata, msg):
+        """
+        Processa mensagens MQTT, suportando o formato MessagePack e fallback para JSON.
+        """
+        # print(f"{client=}, {userdata=}, {msg=}")  # CORREÇÃO: Desativei esta linha de debug.
         try:
-            payload_dict = json.loads(msg.payload.decode("utf-8"))
+            # Tenta descodificar como MessagePack primeiro
+            payload_dict = msgpack.unpackb(msg.payload, raw=False)
+            
+            # CORREÇÃO: Use as novas chaves `id` e `cmd`.
+            original_sender_id = payload_dict.get("id", "unknown")
+            original_command = payload_dict.get("cmd", "none")
+
+            if self.debug and len(original_sender_id) > MAX_CHAR_LIMIT:
+                print(f"[DEBUG] '{original_sender_id}' -> '{original_sender_id[:MAX_CHAR_LIMIT]}'.")
+            if self.debug and len(original_command) > MAX_CHAR_LIMIT:
+                print(f"[DEBUG] '{original_command}' -> '{original_command[:MAX_CHAR_LIMIT]}'.")
+
+
+            sender_id = original_sender_id[:MAX_CHAR_LIMIT]
+            command = original_command[:MAX_CHAR_LIMIT]
+
             self._log_message(msg.topic, payload_dict)
 
-            sender_id = payload_dict.get("sender_id", "unknown")
-            command = payload_dict.get("command", "none")
-            message = payload_dict.get("message", "")
+            message = payload_dict.get("msg", "")
 
             if sender_id != "unknown" and sender_id != self.client_id:
                 if self.debug and sender_id not in self.known_devices:
                     print(f"[INFO] Novo dispositivo detetado: {sender_id}")
-                self.known_devices.add(sender_id)
+                
+                with self.lock:
+                    self.known_devices.add(sender_id)
 
             if self.on_message_callback:
+                # CORREÇÃO: Passa os argumentos corretos para o callback (id, cmd, msg).
                 self.on_message_callback(sender_id, command, message)
             
             if command in self.commands_registry:
                 self.commands_registry[command](sender_id, message)
 
-        except json.JSONDecodeError:
-            self._log_message(msg.topic, msg.payload.decode("utf-8"))
-            if self.on_message_callback:
-                self.on_message_callback("unknown", "text_message", msg.payload.decode("utf-8"))
-            if self.debug:
-                print(f"[ERRO] Mensagem inválida (não JSON) no tópico: {msg.topic}")
+        except msgpack.exceptions.UnpackException:
+            # Fallback para JSON
+            try:
+                payload_dict = json.loads(msg.payload.decode("utf-8"))
+                
+                # CORREÇÃO: Adicionado fallback para as chaves antigas de JSON (sender_id, command, message).
+                original_sender_id = payload_dict.get("id", payload_dict.get("sender_id", "unknown"))
+                original_command = payload_dict.get("cmd", payload_dict.get("command", "none"))
+
+                if self.debug and len(original_sender_id) > MAX_CHAR_LIMIT:
+                    print(f"[DEBUG] '{original_sender_id}' -> '{original_sender_id[:MAX_CHAR_LIMIT]}'.")
+                if self.debug and len(original_command) > MAX_CHAR_LIMIT:
+                    print(f"[DEBUG] '{original_command}' -> '{original_command[:MAX_CHAR_LIMIT]}'.")
+
+
+                sender_id = original_sender_id[:MAX_CHAR_LIMIT]
+                command = original_command[:MAX_CHAR_LIMIT]
+
+                self._log_message(msg.topic, payload_dict)
+                message = payload_dict.get("msg", payload_dict.get("message", ""))
+                
+                
+                if command in self.commands_registry:
+                    self.commands_registry[command](sender_id, message)
+                
+                if self.on_message_callback:
+                    self.on_message_callback(sender_id, command, message)
+
+                if self.debug:
+                    print("[INFO] Fallback para JSON bem-sucedido.")
+            except json.JSONDecodeError:
+                # CORREÇÃO: Adicionado um segundo fallback para mensagens de texto simples.
+                text_message = msg.payload.decode("utf-8", "ignore")
+                self._log_message(msg.topic, text_message)
+                if self.on_message_callback:
+                    self.on_message_callback("unknown", "text_message", text_message)
+                if self.debug:
+                    print(f"[ERRO] Mensagem inválida (não JSON ou MessagePack) no tópico: {msg.topic}")
 
         except Exception as e:
             if self.debug:
                 print(f"[ERRO] Erro ao processar mensagem: {e}")
 
-
     def _log_message(self, topic, payload):
-        """
-        Adiciona uma entrada ao log de mensagens.
-        - Aceita um dicionário (JSON) ou uma string como payload.
-        """
+        """Adiciona uma entrada ao log de mensagens."""
         new_entry = {}
         if isinstance(payload, dict):
             new_entry = {
                 "timestamp_received": datetime.now().isoformat(),
-                "sender_id": payload.get("sender_id", "unknown"),
-                "command": payload.get("command", ""),
+                "id": payload.get("id", payload.get("sender_id", "unknown"))[:MAX_CHAR_LIMIT],
+                "cmd": payload.get("cmd", payload.get("command", ""))[:MAX_CHAR_LIMIT],
                 "timestamp_sent": payload.get("timestamp", None),
                 "topic": topic,
-                "message": payload.get("message", "")
+                "msg": payload.get("msg", payload.get("message", ""))
             }
         else:
             new_entry = {
                 "timestamp_received": datetime.now().isoformat(),
-                "sender_id": "unknown",
-                "command": "text_message",
+                "id": "unknown"[:MAX_CHAR_LIMIT],
+                "cmd": "text_message"[:MAX_CHAR_LIMIT],
                 "timestamp_sent": None,
                 "topic": topic,
-                "message": str(payload)
+                "msg": str(payload)
             }
+        
+        with self.lock:
+            # CORREÇÃO: Use `pd.concat` de forma correta e mais eficiente.
+            self.message_log = pd.concat([self.message_log, pd.DataFrame([new_entry])], ignore_index=True)
 
-        self.message_log = pd.concat([self.message_log, pd.DataFrame([new_entry])], ignore_index=True)
 
-
-    def default_on_message(self, device_id, topic, payload):
+    def default_on_message(self, device_id, topic, payload, password=None):
         print(f"[{device_id}] {payload} (via {topic})")
 
     def connect(self):
@@ -152,54 +238,234 @@ class MQTT_Agent:
         self.client.disconnect()
 
     def publish(self, topic, message):
-        self.client.publish(topic, message)
+        """Publica uma mensagem no tópico, convertendo o dicionário para MessagePack."""
+        if isinstance(message, dict):
+            # CORREÇÃO: Usar `use_bin_type=True` é crucial para dados binários.
+            payload = msgpack.packb(message, use_bin_type=True)
+            self.client.publish(topic, payload)
+        else:
+            self.client.publish(topic, message)
 
     def publish_to_device(self, device_id, message_data):
         topic = f"devices/{device_id}/cmd"
-        message_data["sender_id"] = self.client_id
-        payload = json.dumps(message_data)
-        self.publish(topic, payload)
+        message_data["id"] = self.client_id
+        self.publish(topic, message_data)
         if self.debug:
-            print(f"[ENVIO] Para {device_id}: {payload}")
+            # Copiar para evitar modificar o original
+            debug_msg = dict(message_data)
+            # Se o 'msg' for bytes, substituir por string legível para JSON
+            if isinstance(debug_msg.get("msg"), (bytes, bytearray)):
+                debug_msg["msg"] = f"<{len(debug_msg['msg'])} bytes>"
+            print(f"[ENVIO] Para {device_id}: {json.dumps(debug_msg)}")
 
-    def publish_to_device_formatted (self, device_id, command, message):
-        if isinstance(message, dict):
-            message = json.dumps(message)
+    def publish_to_device_formatted(self, device_id, command, message):
+        
+        original_id = self.client_id
+        original_command = command
 
+        if self.debug and len(original_id) > MAX_CHAR_LIMIT:
+            print(f"[DEBUG] '{original_id}' -> '{original_id[:MAX_CHAR_LIMIT]}'.")
+        if self.debug and len(original_command) > MAX_CHAR_LIMIT:
+            print(f"[DEBUG] '{original_command}' -> '{original_command[:MAX_CHAR_LIMIT]}'.")
+    
         payload = {
-            "sender_id": self.client_id,
-            "command": command,
+            "id": original_id[:MAX_CHAR_LIMIT],
+            "cmd": original_command[:MAX_CHAR_LIMIT],
             "timestamp": int(time.time()),
-            "message": message
+            "msg": message
         }
-
         self.publish_to_device(device_id, payload)
 
     def get_known_devices(self):
-        return list(self.known_devices)
+        with self.lock:
+            return list(self.known_devices)
     
     async def _send_ping(self):
         while True:
+            # O payload do ping também é formatado e pode ser truncado
+            original_id = self.client_id
+            original_command = "ping"
+
+            if self.debug and len(original_id) > MAX_CHAR_LIMIT:
+                print(f"[DEBUG] '{original_id}' -> '{original_id[:MAX_CHAR_LIMIT]}'.")
+            
             payload = {
-                "command": "ping",
-                "sender_id": self.client_id,
+                "cmd": original_command[:MAX_CHAR_LIMIT],
+                "id": original_id[:MAX_CHAR_LIMIT],
                 "timestamp": int(time.time())
             }
-            self.publish("devices/all/data", json.dumps(payload))
+            # CORREÇÃO: O tópico de ping estava incorreto na versão antiga do git.
+            self.publish("devices/all/data", payload)
             if self.debug:
                 print(f"[PING] Enviado ping broadcast")
             await asyncio.sleep(self.ping_period)
     
-
     def _handle_ping_command(self, sender_id, message):
-        """
-        Processa o comando 'ping' e responde com um 'pong'.
-        Esta função é chamada pelo registry de comandos.
-        """
-        print("")
-        self.publish_to_device_formatted (sender_id, "pong", f"{self.client_id} manda pong")
+        self.publish_to_device_formatted(sender_id, "pong", f"{self.client_id} manda pong")
         if self.debug:
             print(f"[PONG] Respondido pong para {sender_id}")
+
+    def _handle_begin_transfer(self, sender_id, message, ):
+        with self.lock:
+            self.file_bin[sender_id] = {
+                "id": sender_id,
+                "name": str(message),
+                "data": b"",
+                "isDone": False
+            }
+
+        if self.debug:
+            print(f"[FILE] Iniciada transferência de '{message}' de {sender_id}.")
+
+    def _handle_append_transfer(self, sender_id, message):
+        with self.lock:
+            if sender_id not in self.file_bin:
+                if self.debug:
+                    print(f"[FILE] Recebido chunk de {sender_id} sem BEGIN. Ignorado.")
+                return
+
+            # CORREÇÃO: Adiciona verificação para dados binários ou string
+            chunk_data = message if isinstance(message, (bytes, bytearray)) else str(message).encode("utf-8")
+            self.file_bin[sender_id]["data"] += chunk_data
+
+        if self.debug:
+            print(f"[FILE] {sender_id} -> chunk {len(chunk_data)} bytes acumulados ({len(self.file_bin[sender_id]['data'])} no total).")
+
+    
+    def _handle_end_transfer(self, sender_id, message):
+        with self.lock:
+            if sender_id not in self.file_bin:
+                if self.debug:
+                    print(f"[FILE] Recebido END de {sender_id} sem BEGIN. Ignorado.")
+                return
+
+            if message:
+                # CORREÇÃO: Adiciona verificação para dados binários
+                extra_data = message if isinstance(message, (bytes, bytearray)) else str(message).encode("utf-8")
+                self.file_bin[sender_id]["data"] += extra_data
+
+            self.file_bin[sender_id]["isDone"] = True
+            
+        if self.debug:
+            fname = self.file_bin[sender_id]["name"]
+            total = len(self.file_bin[sender_id]["data"])
+            print(f"[FILE] Transferência concluída de {sender_id}: '{fname}' ({total} bytes).")
+
+    def transfer_file(self, destination_id, file_path_or_data, is_raw_data=False, total_chunk_size_of_msgpack = 512):
+        if not self.enable_file_transfer:
+            if self.debug:
+                print("[FILE] Transferência de ficheiros desativada.")
+            return
+        
+
+        
+        if is_raw_data:
+            file_data = file_path_or_data if isinstance(file_path_or_data, (bytes, bytearray)) else bytes(file_path_or_data)
+            file_name = f"raw_data_{int(time.time())}.dat"
+        else:
+            if not os.path.exists(file_path_or_data):
+                if self.debug:
+                    print(f"[FILE] Ficheiro não encontrado: {file_path_or_data}")
+                return
+            file_name = os.path.basename(file_path_or_data)
+            with open(file_path_or_data, "rb") as f:
+                file_data = f.read()
+
+        payload_begin = {
+            "id": self.client_id[:MAX_CHAR_LIMIT],
+            "cmd": "bg_t",
+            "timestamp": int(time.time()),
+            "msg": file_name
+        }
+
+        self.publish_to_device(destination_id, payload_begin)
+        if self.debug:
+            print(f"[FILE] BEGIN enviado para {destination_id} ({file_name})")
+
+        test_payload = {
+            "id": self.client_id[:MAX_CHAR_LIMIT],
+            "cmd": "ap_t",
+            "timestamp": int(time.time()),
+            "msg": b""
+        }
+
+        fixed_overhead = len(msgpack.packb(test_payload, use_bin_type=True))
+        max_chunk_size = total_chunk_size_of_msgpack - fixed_overhead
+        if max_chunk_size <= 0:
+            raise ValueError("Chunk size demasiado pequeno para suportar cabeçalho MQTT.")
+
+        offset = 0
+        while offset < len(file_data):
+            chunk = file_data[offset: (offset + max_chunk_size)]
+            payload_chunk = {
+                "id": self.client_id[:MAX_CHAR_LIMIT],
+                "cmd": "ap_t",
+                "timestamp": int(time.time()),
+                "msg": chunk
+            }
+            self.publish_to_device(destination_id, payload_chunk)
+            if self.debug:
+                print(f"[FILE] Chunk enviado ({len(chunk)} bytes) para {destination_id}")
+            offset += len(chunk)     
+
+        payload_end = {
+            "id": self.client_id[:MAX_CHAR_LIMIT],
+            "cmd": "end_t",
+            "timestamp": int(time.time()),
+            "msg": b""
+        }
+
+        self.publish_to_device(destination_id, payload_end)
+        if self.debug:
+            print(f"[FILE] END enviado para {destination_id} ({file_name})")
+
+    def extractFile(self, from_device_id, read_as):
+        with self.lock:
+            if from_device_id not in self.file_bin:
+                if self.debug:
+                    print(f"[EXTRACT] Ficheiro de {from_device_id} não encontrado.")
+                return None
+            
+            if not self.file_bin[from_device_id]["isDone"]:
+                if self.debug:
+                    print(f"[EXTRACT] Ficheiro de {from_device_id} ainda não está pronto.")
+                return None
+            
+            file_data = self.file_bin[from_device_id]["data"]
+        if read_as and read_as.lower() == "str":
+            try:
+                return file_data.decode("utf-8")
+            except UnicodeDecodeError:
+                if self.debug:
+                    print(f"[EXTRACT] Erro a descodificar o ficheiro de {from_device_id} como string. A devolver bytes.")
+                return file_data
+        else:
+            return file_data
+
+    def create_file(self, from_device_id):
+        with self.lock:
+            if from_device_id not in self.file_bin:
+                if self.debug:
+                    print(f"[CREATE_FILE] Nenhum ficheiro encontrado de '{from_device_id}'.")
+                return
+            file_name = os.path.basename(self.file_bin[from_device_id]["name"])
+            file_data = self.file_bin[from_device_id]["data"]
+
+        try:
+            with open(file_name, "wb") as f:
+                f.write(file_data)
+            if self.debug:
+                print(f"[CREATE_FILE] Ficheiro '{file_name}' criado com sucesso a partir de '{from_device_id}'.")
+
+            with self.lock:
+                del self.file_bin[from_device_id]
+            
+            if self.debug:
+                print(f"[CREATE_FILE] Dados de '{from_device_id}' removidos da memória.")
+
+        except Exception as e:
+            if self.debug:
+                print(f"[CREATE_FILE] Erro ao criar o ficheiro '{file_name}': {e}")
 
 
 
@@ -239,4 +505,5 @@ class MQTT_Agent:
         return thread
 
     def get_logs(self):
-        return self.message_log.copy()
+        with self.lock:
+            return self.message_log.copy()
