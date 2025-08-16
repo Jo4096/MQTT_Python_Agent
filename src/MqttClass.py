@@ -8,6 +8,7 @@ import os
 import threading
 import pandas as pd
 from datetime import datetime
+import base64
 
 
 MAX_CHAR_LIMIT = 12
@@ -75,7 +76,7 @@ class MQTT_Agent:
         self.lock = threading.Lock()
         
         # CORREÇÃO: Altere as colunas do DataFrame para refletir as novas chaves (id, cmd)
-        self.message_log = pd.DataFrame(columns=["timestamp_received", "id", "cmd", "timestamp_sent", "topic", "msg"])
+        self.message_log = pd.DataFrame(columns=["id", "cmd", "topic", "msg"])
 
     @classmethod
     def from_json(cls, json_path):
@@ -200,19 +201,15 @@ class MQTT_Agent:
         new_entry = {}
         if isinstance(payload, dict):
             new_entry = {
-                "timestamp_received": datetime.now().isoformat(),
                 "id": payload.get("id", payload.get("sender_id", "unknown"))[:MAX_CHAR_LIMIT],
                 "cmd": payload.get("cmd", payload.get("command", ""))[:MAX_CHAR_LIMIT],
-                "timestamp_sent": payload.get("timestamp", None),
                 "topic": topic,
                 "msg": payload.get("msg", payload.get("message", ""))
             }
         else:
             new_entry = {
-                "timestamp_received": datetime.now().isoformat(),
                 "id": "unknown"[:MAX_CHAR_LIMIT],
                 "cmd": "text_message"[:MAX_CHAR_LIMIT],
-                "timestamp_sent": None,
                 "topic": topic,
                 "msg": str(payload)
             }
@@ -271,7 +268,6 @@ class MQTT_Agent:
         payload = {
             "id": original_id[:MAX_CHAR_LIMIT],
             "cmd": original_command[:MAX_CHAR_LIMIT],
-            "timestamp": int(time.time()),
             "msg": message
         }
         self.publish_to_device(device_id, payload)
@@ -292,7 +288,6 @@ class MQTT_Agent:
             payload = {
                 "cmd": original_command[:MAX_CHAR_LIMIT],
                 "id": original_id[:MAX_CHAR_LIMIT],
-                "timestamp": int(time.time())
             }
             # CORREÇÃO: O tópico de ping estava incorreto na versão antiga do git.
             self.publish("devices/all/data", payload)
@@ -357,8 +352,6 @@ class MQTT_Agent:
                 print("[FILE] Transferência de ficheiros desativada.")
             return
         
-
-        
         if is_raw_data:
             file_data = file_path_or_data if isinstance(file_path_or_data, (bytes, bytearray)) else bytes(file_path_or_data)
             file_name = f"raw_data_{int(time.time())}.dat"
@@ -368,13 +361,12 @@ class MQTT_Agent:
                     print(f"[FILE] Ficheiro não encontrado: {file_path_or_data}")
                 return
             file_name = os.path.basename(file_path_or_data)
-            with open(file_path_or_data, "rb") as f:
+            with open(file_path_or_data, "r") as f:
                 file_data = f.read()
 
         payload_begin = {
             "id": self.client_id[:MAX_CHAR_LIMIT],
             "cmd": "bg_t",
-            "timestamp": int(time.time()),
             "msg": file_name
         }
 
@@ -385,25 +377,19 @@ class MQTT_Agent:
         test_payload = {
             "id": self.client_id[:MAX_CHAR_LIMIT],
             "cmd": "ap_t",
-            "timestamp": int(time.time()),
-            "msg": b""
+            "msg": ""
         }
 
         fixed_overhead = len(msgpack.packb(test_payload, use_bin_type=True))
         max_chunk_size = total_chunk_size_of_msgpack - fixed_overhead
         if max_chunk_size <= 0:
-            raise ValueError("Chunk size demasiado pequeno para suportar cabeçalho MQTT.")
+            raise ValueError(f"Chunk size demasiado pequeno para suportar cabeçalho MQTT. Mínimo necessário: {fixed_overhead + 1} bytes.")
 
         offset = 0
         while offset < len(file_data):
             chunk = file_data[offset: (offset + max_chunk_size)]
-            payload_chunk = {
-                "id": self.client_id[:MAX_CHAR_LIMIT],
-                "cmd": "ap_t",
-                "timestamp": int(time.time()),
-                "msg": chunk
-            }
-            self.publish_to_device(destination_id, payload_chunk)
+            self.publish_to_device_formatted(destination_id, "ap_t", chunk)
+
             if self.debug:
                 print(f"[FILE] Chunk enviado ({len(chunk)} bytes) para {destination_id}")
             offset += len(chunk)     
@@ -411,8 +397,7 @@ class MQTT_Agent:
         payload_end = {
             "id": self.client_id[:MAX_CHAR_LIMIT],
             "cmd": "end_t",
-            "timestamp": int(time.time()),
-            "msg": b""
+            "msg": ""
         }
 
         self.publish_to_device(destination_id, payload_end)
@@ -431,23 +416,26 @@ class MQTT_Agent:
                     print(f"[EXTRACT] Ficheiro de {from_device_id} ainda não está pronto.")
                 return None
             
+            file_name = self.file_bin[from_device_id]["name"]
             file_data = self.file_bin[from_device_id]["data"]
+
+        # Retorna string se pedido, senão bytes
         if read_as and read_as.lower() == "str":
             try:
-                return file_data.decode("utf-8")
+                file_data = file_data.decode("utf-8")
             except UnicodeDecodeError:
                 if self.debug:
                     print(f"[EXTRACT] Erro a descodificar o ficheiro de {from_device_id} como string. A devolver bytes.")
-                return file_data
-        else:
-            return file_data
+                # mantém em bytes
+        return file_name, file_data
 
     def create_file(self, from_device_id):
         with self.lock:
             if from_device_id not in self.file_bin:
                 if self.debug:
                     print(f"[CREATE_FILE] Nenhum ficheiro encontrado de '{from_device_id}'.")
-                return
+                return False  # <-- retorna False se não existir
+
             file_name = os.path.basename(self.file_bin[from_device_id]["name"])
             file_data = self.file_bin[from_device_id]["data"]
 
@@ -459,13 +447,17 @@ class MQTT_Agent:
 
             with self.lock:
                 del self.file_bin[from_device_id]
-            
+
             if self.debug:
                 print(f"[CREATE_FILE] Dados de '{from_device_id}' removidos da memória.")
+
+            return True  # <-- sucesso na criação
 
         except Exception as e:
             if self.debug:
                 print(f"[CREATE_FILE] Erro ao criar o ficheiro '{file_name}': {e}")
+            return False  # <-- erro na criação
+
 
 
 
