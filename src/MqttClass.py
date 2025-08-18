@@ -18,7 +18,7 @@ class MQTT_Agent:
     def __init__(self, broker, port=1883, client_id=None, topics_subscribe=None,
                  on_message_callback=None, keep_alive=60, username=None, password=None,
                  clean_session=True, debug_prints=False,
-                 enable_ping=False, enable_pong=False, enable_file_transfer=True, ping_period=30, mypassword=""):
+                 enable_ping=False, enable_pong=False, enable_file_transfer=True, ping_period=30, write_period = 5):
         
         self.enable_ping = enable_ping
         self.enable_pong = enable_pong
@@ -46,9 +46,7 @@ class MQTT_Agent:
         self.clean_session = clean_session
         self.debug = debug_prints
 
-        self.mypassword = mypassword[:MAX_CHAR_LIMIT]
-        if mypassword and len(mypassword) > MAX_CHAR_LIMIT and debug_prints:
-            print(f"[DEBUG] password set to 12 chars.")
+        self.write_period = write_period
 
 
         self.known_devices = set()
@@ -459,16 +457,74 @@ class MQTT_Agent:
             return False  # <-- erro na criação
 
 
+    def _write_first_ready_file(self):
+        with self.lock:
+            # Get a list of device IDs with completed file transfers
+            completed_devices = [device_id for device_id, file_info in self.file_bin.items() if file_info["isDone"]]
+            
+            if not completed_devices:
+                if self.debug:
+                    print("[FILE] Nenhum ficheiro concluído para escrever.")
+                return False, ""
+            
+            from_device_id = completed_devices[0]
+            file_info = self.file_bin[from_device_id]
+            file_name = file_info["name"]
+            file_data = file_info["data"]
+            
+            # Define the output directory and ensure it exists
+            output_dir = "received_files"
+            os.makedirs(output_dir, exist_ok=True)
+            file_path = os.path.join(output_dir, file_name)
 
+            try:
+                # Write the file in binary mode
+                with open(file_path, "wb") as f:
+                    f.write(file_data)
+                
+                if self.debug:
+                    print(f"[FILE] Ficheiro '{file_name}' de '{from_device_id}' escrito com sucesso.")
+                
+                # Clean up the in-memory data after successful write
+                del self.file_bin[from_device_id]
+                if self.debug:
+                    print(f"[FILE] Dados de '{from_device_id}' removidos da memória.")
+                
+                return True, file_path
+            
+            except Exception as e:
+                if self.debug:
+                    print(f"[ERRO] Erro ao escrever o ficheiro '{file_name}': {e}")
+                return False, ""
+
+    async def _file_writing_loop(self):
+        """
+        Periodicamente verifica e escreve ficheiros recebidos.
+        """
+        while True:
+            try:
+                success, file_path = self._write_first_ready_file()
+                if success:
+                    if self.debug:
+                        print(f"[FILE] Ficheiro {file_path} escrito.")
+            except Exception as e:
+                if self.debug:
+                    print(f"[ERRO] Erro no loop de escrita: {e}")
+            await asyncio.sleep(self.write_period)
 
     def run(self):
         try:
             self.connect()
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
+            
+            # Start the ping task if enabled
             if self.enable_ping:
                 self._ping_task = self.loop.create_task(self._send_ping())
 
+            # New: Start the file writing task
+            self.loop.create_task(self._file_writing_loop())
+            
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
                 s.connect(("8.8.8.8", 80))
@@ -480,6 +536,7 @@ class MQTT_Agent:
 
             print(f"[MQTT] Agente iniciado em {local_ip}:{self.port}")
             print("[MQTT] Pressiona Ctrl+C para sair.")
+            
             self.loop.run_forever()
         except KeyboardInterrupt:
             print("\n[MQTT] Interrupção recebida. A terminar...")
